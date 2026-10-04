@@ -7,7 +7,7 @@
 <meta name="description" content="داشبورد فارسی تحلیل تکنیکال رمزارز با پایش مداوم بازار، رتبه‌بندی بهترین ارزها و اعلام بهترین قیمت خرید بر پایه RSI، MACD، بولینگر و فیبوناچی.">
 <meta name="theme-color" content="#070b14">
 <meta name="referrer" content="strict-origin-when-cross-origin">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.coingecko.com https://api.alternative.me https://mempool.space https://api.llama.fi; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.coingecko.com https://api.alternative.me; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
 <meta property="og:type" content="website">
 <meta property="og:title" content="کریپتوبین | تحلیل تکنیکال هوشمند بازار رمزارز">
 <meta property="og:description" content="پایش مداوم بازار، رتبه‌بندی بهترین رمزارزها و اعلام بهترین قیمت خرید با تحلیل تکنیکال زنده.">
@@ -53,11 +53,14 @@
       <div class="stat"><div class="lbl">میانگین RSI بازار</div><div class="val" id="s-rsi">—</div><div class="sub" id="s-rsitxt"></div><div class="bgico">📈</div></div>
       <div class="stat"><div class="lbl">ارزهای بالای میانگین ۲۰</div><div class="val" id="s-above">—</div><div class="sub">قدرت گستردگی روند — بالای SMA20</div><div class="bgico">🧭</div></div>
     </div>
+    <div class="heatmap" id="heatmap" role="group" aria-label="نقشه‌ی حرارتی تغییر ۲۴ ساعته‌ی بازار" title="عرض هر کاشی = سهم ارزش بازار • رنگ = تغییر ۲۴ ساعته • کلیک = جزئیات ارز"></div>
   </section>
 
   <!-- Market pulse -->
   <section>
-    <div class="sec-title"><span class="bar"></span>نبض بازار و پیش‌بینی کلی</div>
+    <div class="sec-title"><span class="bar"></span>نبض بازار و پیش‌بینی کلی
+      <button class="btn" id="summaryBtn" style="margin-inline-start:auto;font-size:.78rem" title="یک گزارش متنی کوتاه از وضعیت کل بازار می‌سازد و در کلیپ‌بورد کپی می‌کند — برای اشتراک‌گذاری در چت و کانال" aria-label="کپی خلاصه‌ی متنی بازار">📋 خلاصه‌ی بازار</button>
+    </div>
     <div class="pulse-grid">
       <div class="panel">
         <h3>🔮 پیش‌بینی روند کلی هفته آینده</h3>
@@ -98,27 +101,6 @@
       </div>
     </div>
   </section>
-  <!-- On-chain -->
-  <section id="ocSec" data-mode="auto">
-    <div class="sec-title"><span class="bar"></span>🔗 داده‌ی On-chain — سوخت بازار، سلامت شبکه و فشار عرضه</div>
-    <div class="panel oc-panel">
-      <div class="oc-verdict" id="ocVerdict" aria-live="polite"><span class="muted">در انتظار داده…</span></div>
-      <div class="oc-grid" id="ocGrid"></div>
-      <div class="rwhy oc-why-row" id="ocWhy"></div>
-      <div class="oc-coins" id="ocCoins"></div>
-      <div class="ts-sub oc-note">
-        این لایه سه چیز را می‌سنجد که با کندل و حجم دیده نمی‌شوند: <b>۱) عرضه‌ی on-chain استیبل‌کوین‌ها</b>
-        (تتر + USDC) که سوخت واقعی ورود به بازار است، <b>۲) سلامت شبکه‌ی بیت‌کوین</b>
-        (نرخ هش، دشواری، کارمزد و صف مِم‌پول — نشانه‌ی تسلیم یا اشتهای واقعی) و <b>۳) عرضه‌ی در راه</b>
-        (فاصله‌ی FDV تا ارزش بازار و روند TVL زنجیره‌ی میزبان).
-        اعداد از <span class="mono">mempool.space</span>، <span class="mono">api.llama.fi</span> و همان
-        پاسخ CoinGecko می‌آیند — بدون کلید API. روند TVL و «سهم دلاری» با اسنپ‌شات‌های ساعتیِ محلی ساخته
-        می‌شوند، پس تا چند ساعت تاریخچه جمع نشود عمداً <b>بی‌اثر</b> می‌مانند (صفرِ ساختگی نداریم).
-        در حالت «خاموش» هیچ فراخوانی زده نمی‌شود و همه‌ی امتیازها دقیقاً مثل قبل‌اند.
-      </div>
-    </div>
-  </section>
-
   <!-- Long / Short side tabs -->
   <div class="side-tabs" id="sideTabs" role="tablist" aria-label="انتخاب جهت معامله">
     <button class="side-tab active" role="tab" data-side="long" id="tabLong" aria-selected="true" aria-controls="bestSec perfSec" tabindex="0">
@@ -274,15 +256,7 @@
             <option value="full">کامل — ۴۰ ارز در ساعت</option>
           </select>
         </div>
-        <div class="swrow"><span>لایه‌ی On-chain</span>
-          <select class="sel" id="ocMode" title="داده‌ی زنجیره‌ی عمومی (mempool.space، DefiLlama و عرضه‌ی on-chain استیبل‌کوین‌ها) بدون کلید API خوانده می‌شود. «خودکار» روی امتیاز خرید و دروازه اثر می‌گذارد؛ «فقط نمایش» هیچ امتیازی را تغییر نمی‌دهد." aria-label="حالت لایه On-chain">
-            <option value="auto" selected>خودکار (روی امتیاز و دروازه)</option>
-            <option value="display">فقط نمایش</option>
-            <option value="off">خاموش (بدون فراخوان)</option>
-          </select>
-        </div>
         <div class="swrow md-status-row"><span class="md-status-label">وضعیت داده</span><b class="md-status" id="mdStatus">—</b></div>
-        <div class="swrow md-status-row"><span class="md-status-label">وضعیت آنچین</span><b class="md-status" id="ocStatus">—</b></div>
         <div class="swrow"><span>چرخه‌های انجام‌شده</span><b id="cycles">۰</b></div>
         <div class="swrow"><span>آخرین بررسی</span><b id="lastChk">—</b></div>
         <button class="btn" id="clearAl" style="width:100%;justify-content:center;margin-top:10px">🗑️ پاک کردن تاریخچه هشدارها</button>
@@ -364,13 +338,13 @@
 <footer>
   ⚠️ این ابزار صرفاً جنبه آموزشی و تحلیلی دارد و سیگنال قطعی خرید یا فروش نیست. تمام محاسبات (RSI، MACD، میانگین‌های متحرک، باند بولینگر، رگرسیون روند) به‌صورت محلی در مرورگر شما و بر اساس داده‌های CoinGecko و Alternative.me انجام می‌شود.<br>
   همیشه پیش از سرمایه‌گذاری، تحقیق شخصی انجام دهید و مدیریت ریسک را رعایت کنید.<br>
+  <span style="font-size:.7rem;opacity:.7">⌨️ میان‌برها: <b>/</b> جستجو • <b>r</b> بروزرسانی • <b>1/2/3</b> تب‌های لانگ/شورت/دوطرفه • <b>w</b> علاقه‌مندی‌ها • <b>📋</b> خلاصه‌ی بازار در بخش نبض بازار</span><br>
   <span style="font-size:.7rem;opacity:.7">نسخه بهبودیافته — هماهنگی پیام‌ها، گرافیک و منطق تحلیلی بازبینی شد • دروازه‌ی رژیم، قدرت نسبی و بهترین قیمت خرید یکپارچه هستند</span>
 </footer>
 
 <script src="analytics.js" defer></script>
 <script src="market-data.js" defer></script>
 <script src="short-engine.js" defer></script>
-<script src="onchain.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

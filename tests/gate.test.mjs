@@ -747,6 +747,27 @@ test('🗄️ ریکاوری: رکورد نیمه‌بسته/سر‌به‌سر 
   assert.equal(hist.length,1); assert.equal(hist[0].ret,2.45);
 });
 
+test('🗺️ نقشه‌ی حرارتی: کاشی‌ها با وزن ارزش بازار و رنگ تغییر ۲۴ ساعته رندر می‌شوند',async()=>{
+  const {api}=boot('riskon'); await settled(api);
+  api.renderHeatmap();
+  const hm=els.get('#heatmap');
+  assert.ok(hm && /hm-tile/.test(hm.innerHTML),'کاشی‌های نقشه‌ی حرارتی رندر نشدند');
+  assert.match(hm.innerHTML,/data-action="open"/,'کاشی‌ها باید با همان قرارداد کلیکِ مودال باز شوند');
+  assert.doesNotMatch(hm.innerHTML,/NaN/,'مقدار نامعتبر در کاشی‌ها نشت کرده');
+  /* رنگ: صعود سبز (hue≈150)، ریزش قرمز (hue≈348)، بی‌داده خاکستری */
+  assert.match(api.hmColor(5),/hsl\(150/);
+  assert.match(api.hmColor(-5),/hsl\(348/);
+  assert.equal(api.hmColor(null),'#334155');
+});
+test('📋 خلاصه‌ی بازار: گزارش متنی کامل و بدون نشت NaN',async()=>{
+  const {api}=boot('riskon'); await settled(api);
+  const txt=api.buildSummary();
+  assert.match(txt,/کریپتوبین — خلاصه‌ی بازار/);
+  assert.match(txt,/رژیم بازار:/,'رژیم باید در خلاصه باشد');
+  assert.match(txt,/دروازه‌ی رژیم:/,'دروازه باید در خلاصه باشد');
+  assert.doesNotMatch(txt,/NaN|undefined/,'مقدار نامعتبر در خلاصه نشت کرده');
+});
+
 /* ------------------------- اجرا ------------------------- */
 let pass=0, fail=0;
 for(const [name, fn] of results){

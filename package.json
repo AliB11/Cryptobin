@@ -1,0 +1,16 @@
+{
+  "name": "cryptobin",
+  "version": "1.11.0",
+  "private": true,
+  "description": "کریپتوبین — داشبورد فارسی تحلیل تکنیکال بازار رمزارز. کاملاً استاتیک و سمت کلاینت، بدون بک‌اند و بدون وابستگی نصب‌شدنی.",
+  "homepage": "https://github.com/AliB11/Cryptobin#readme",
+  "license": "MIT",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "test": "node tests/quality.test.mjs && node tests/gate.test.mjs && node tests/hardening.test.mjs && node --test tests/analytics.test.mjs tests/marketdata.test.mjs tests/short.test.mjs && node tests/backtest.mjs",
+    "test:quick": "node tests/quality.test.mjs && node tests/gate.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
