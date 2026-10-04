@@ -105,6 +105,27 @@ assert.doesNotMatch(app,/parseInt\(state\.fng\.value\)/,'خواندن مستقی
 /* فیلتر هشدار «فقط شورت» باید معتبر شمرده شود */
 assert.match(app,/\['all','buy','watch','short'\]\.includes\(m\.filter\)/,'فیلتر short در اعتبارسنجی بارگذاری جا افتاده');
 
+/* استاندارد دیپلوی ورسل: پیکربندی باید حضور داشته باشد و قفل‌های کلیدی‌اش سالم.
+   مهم‌ترین قفل: صفحه و مخصوصاً sw.js هرگز با عمر بلند کش نشوند، وگرنه
+   پوسته‌ی تازه‌ی هر انتشار به کاربران نمی‌رسد. */
+{
+  const vercel=JSON.parse(readFileSync(new URL('../vercel.json',import.meta.url),'utf8'));
+  assert.ok(Array.isArray(vercel.headers)&&vercel.headers.length,'vercel.json باید هدر داشته باشد');
+  const noCache=src=>{
+    const b=vercel.headers.find(h=>h.source===src);
+    assert.ok(b,`هدرهای ${src} در vercel.json تعریف نشده`);
+    const cc=b.headers.find(h=>h.key==='Cache-Control');
+    assert.ok(cc&&/max-age=0/.test(cc.value),`${src} باید بدون کش بلند سرو شود`);
+  };
+  noCache('/sw.js'); noCache('/index.html');
+  assert.ok(vercel.headers.some(h=>h.source==='/(.*)'&&h.headers.some(x=>x.key==='Strict-Transport-Security')),
+    'HSTS باید روی همه‌ی مسیرها فعال باشد');
+  const pkg=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+  assert.match(pkg.scripts.test,/quality/,'npm test باید آزمون کیفیت را اجرا کند');
+  const ignore=readFileSync(new URL('../.vercelignore',import.meta.url),'utf8');
+  assert.match(ignore,/tests\//,'تست‌ها نباید دیپلوی شوند');
+}
+
 const workerCode=readFileSync(new URL('../indicator-worker.js',import.meta.url),'utf8');
 let posted;
 const sandbox={self:{postMessage:v=>{posted=v}},Number,Math};

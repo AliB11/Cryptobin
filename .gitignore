@@ -1,0 +1,8 @@
+# وابستگی‌ها و خروجی‌های ابزارها
+node_modules/
+.vercel/
+npm-debug.log*
+
+# سیستم‌عامل
+.DS_Store
+Thumbs.db
