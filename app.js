@@ -17,7 +17,7 @@ const CATS = {
 const LS_KEYS = {
   watch:'cb_watch', cmp:'cb_cmp', gate:'cb_gate_v1', alerts:'cb_alerts',
   perf:'cb_perf_v1', cache:'cb_cache', risk:'cb_risk', mon:'cb_mon_v1',
-  view:'cb_view', sort:'cb_sort', filter:'cb_filter', side:'cb_side_v1', oc:'cb_oc_v1'
+  view:'cb_view', sort:'cb_sort', filter:'cb_filter', side:'cb_side_v1'
 };
 /* ---------------------------------------------------------------------
    داده‌ی حافظه هرگز «سالم» فرض نمی‌شود
@@ -51,7 +51,7 @@ function sanitizeAlerts(v){
 }
 
 const state = {coins:[], global:null, fng:null, filter:'all', q:'', sort:'buy', view:'cards',
-  deriv:null, derivAt:null, derivCount:0, history:[], globalTrend:null, oc:null,
+  deriv:null, derivAt:null, derivCount:0, history:[], globalTrend:null,
   watch: sanitizeIds(storedJSON(LS_KEYS.watch, [])),
   watchOnly:false, modalCoin:null, tf:7, chartCache:{},
   cmp: sanitizeIds(storedJSON(LS_KEYS.cmp, []), 4)
@@ -140,288 +140,6 @@ const gate={
   save(){ try{ localStorage.setItem(LS_KEYS.gate, JSON.stringify({mode:this.mode, onlyApproved:this.onlyApproved})); }catch(e){} }
 };
 gate.load();
-/* =====================================================================
-   لایه‌ی On-chain (فاز ۳) — سه پرسشی که با قیمت و حجم پاسخ داده نمی‌شود:
-     ۱) پول کجاست؟                  → عرضه‌ی استیبل‌کوین روی زنجیره + سهم دلاری
-     ۲) شبکه داغ است یا سرد؟        → نرخ هش، دشواری، کارمزد، مِم‌پول
-     ۳) با چه عرضه‌ای معامله می‌کنیم؟ → فاصله‌ی FDV تا ارزش بازار و TVL زنجیره
-   منابع: mempool.space و api.llama.fi (بدون کلید، CORS باز) + همان داده‌ای که
-   از قبل از CoinGecko می‌آید. قاعده‌ی طراحی: نبودِ داده باید «هیچ» باشد نه
-   «صفر» — یعنی با لایه‌ی خاموش یا بدون شبکه، همه‌ی امتیازها، دروازه‌ها و
-   رتبه‌ها بیت‌به‌بیت مثل قبل درمی‌آیند (این همان چیزی است که آزمون می‌سنجد).
-   ===================================================================== */
-const OC_MODES = {
-  auto   :{k:'auto',    label:'خودکار',    hint:'روی امتیاز خرید، دروازه و رتبه‌بندی اثر می‌گذارد'},
-  display:{k:'display', label:'فقط نمایش', hint:'اعداد آنچین نشان داده می‌شود؛ هیچ امتیازی تغییر نمی‌کند'},
-  off    :{k:'off',     label:'خاموش',     hint:'هیچ فراخوانی به سرویس‌های آنچین زده نمی‌شود'}
-};
-const oc = {
-  mode:'auto',
-  load(){ try{ const d=JSON.parse(localStorage.getItem(LS_KEYS.oc)||'{}');
-      if(OC_MODES[d.mode]) this.mode=d.mode; }catch(e){} },
-  save(){ try{ localStorage.setItem(LS_KEYS.oc, JSON.stringify({mode:this.mode})); }catch(e){} }
-};
-oc.load();
-
-/* وضعیت لایه — همه‌چیز nullable است تا «سنجه‌شدنی نبودن» با «خنثی بودن»
-   یکی نشود؛ صفرِ بی‌داده، قوی‌ترین تورمی است که یک امتیاز می‌تواند بخورد. */
-const ocs = {
-  net:null, netAt:null, liq:null, liqAt:null, liqSeries:[], chains:null, chainLook:null, chainAt:null,
-  hist:{liq:[], chains:[]}, share:null, at:null, errors:{}, lastErr:null
-};
-const OC_OK    = () => typeof OnChain !== 'undefined' && oc.mode !== 'off';
-const OC_SCORE = () => typeof OnChain !== 'undefined' && oc.mode === 'auto';
-
-/* یک گروه واکشی با بودجه و کش خودش. pick روی پاسخ خام اعمال می‌شود و همان
-   خروجیِ کوچک کش می‌شود — نه پاسخ کامل (مِم‌پول ۱۵ کیلوبایت هیستوگرام دارد!). */
-async function ocGroup(kind, urls, ttl, pick){
-  const M = OnChain, t = Date.now();
-  const age = M.cacheAge(kind, t);
-  const cached = age != null ? M.cacheGet(kind, ttl * 40, t) : null;   // مهلت مضاعف: کهنه بهتر از هیچ
-  if(age != null && age <= ttl && cached != null) return { d:cached, age, cached:true };
-  if(!M.canCall(kind, t)) return cached != null ? { d:cached, age, stale:true } : null;
-  const raw = {}; let gotAny = false, throttled = false;
-  for(const key of Object.keys(urls)){
-    /* فاصله‌ی حداقلیِ گروه یک‌بار در ابتدای راند بررسی می‌شود؛ اگر هر درخواست جدا
-       سنجیده شود، نیمه‌ی دوم هر گروه (مِم‌پول و نرخ هش) هرگز واکشی نمی‌شود.
-       سهمیه‌ی ساعتی اما برای هر درخواست نگه داشته می‌شود. */
-    if(!M.hasBudget(Date.now())) break;
-    M.noteCall(kind, Date.now());
-    const r = await M.getJSON(urls[key], 12000);
-    if(r && r.__error){
-      if(r.status === 429 || r.status === 403) throttled = true;
-      ocs.errors[key] = r.status || r.reason || 'error';
-    } else { raw[key] = r; gotAny = true; delete ocs.errors[key]; }
-  }
-  M.backoffOn(throttled);
-  if(!gotAny) return cached != null ? { d:cached, age, stale:true } : null;
-  const d = pick(raw);
-  if(d == null) return cached != null ? { d:cached, age, stale:true } : null;
-  M.cacheSet(kind, d, Date.now());
-  return { d, age:0, fresh:true };
-}
-function ocMergeNet(a, b){
-  const o = Object.assign({}, a || {});
-  Object.keys(b || {}).forEach(k => { if(b[k] != null) o[k] = b[k]; });
-  return o;
-}
-
-/* نشستِ داده‌ی کش‌شده روی وضعیت — بدون هیچ فراخوان تازه (بوت و حالت آفلاین) */
-function ocReadCache(){
-  if(!OC_OK()) return false;
-  const M = OnChain, t = Date.now();
-  let touched = false;
-  const slow = M.cacheGet('btcSlow', M.TTL.btcSlow * 8, t);
-  const fast = M.cacheGet('btcMin',  M.TTL.btcMin * 24, t);
-  if(slow || fast){
-    const merged = ocMergeNet(slow, fast);
-    if(merged && (merged.hashNow != null || merged.feeFast != null)){ ocs.net = merged; touched = true; }
-    const age = Math.min(M.cacheAge('btcSlow', t) ?? Infinity, M.cacheAge('btcMin', t) ?? Infinity);
-    ocs.netAt = Number.isFinite(age) ? t - age : null;
-  }
-  const st = M.cacheGet('stables', M.TTL.stables * 8, t);
-  if(st && Array.isArray(st.series) && st.series.length > 3){
-    ocs.liqSeries = st.series;
-    const a2 = M.cacheAge('stables', t);
-    ocs.liqAt = a2 != null ? t - a2 : null;
-    touched = true;
-  }
-  const ch = M.cacheGet('chains', M.TTL.chains * 8, t);
-  if(ch && ch.v && Object.keys(ch.v).length){
-    ocs.chains = ch.v; ocs.chainLook = M.chainLookup(ch.v);
-    const a3 = M.cacheAge('chains', t);
-    ocs.chainAt = a3 != null ? t - a3 : null;
-    touched = true;
-  }
-  ocs.hist.liq = M.loadLiqHistory();
-  ocs.hist.chains = M.loadChainHistory();
-  ocs.liq = M.analyzeLiquidity(ocs.liqSeries, t);
-  if(ocs.liq && ocs.liq.level === 'unknown') ocs.liq = null;
-  if(ocs.hist.liq.length > 1) ocs.share = M.shareTrend(ocs.hist.liq, 3, t);
-  if(touched) ocs.at = t;
-  return touched;
-}
-
-/* یک قدم واکشی در هر چرخه؛ خودش تصمیم می‌گیرد کدام گروه سر رسیده است.
-   خروجی = تعداد اجزای تازه (صفر یعنی دوباره تحلیل لازم نیست). */
-async function refreshOnChain(){
-  if(!OC_OK()) return 0;
-  const M = OnChain;
-  if(!shortFresh()) return 0;              // آفلاین: فقط همان که ocReadCache خوانده
-  let fresh = 0;
-  const take = async (kind, urls, ttl, pick) => {
-    const r = await ocGroup(kind, urls, ttl, pick);
-    if(r && r.fresh) fresh++;
-    return r;
-  };
-  /* ۱) شبکه‌ی بیت‌کوین: دشواری/نرخ هش (ساعتی) + کارمزد/صف (۱۵ دقیقه) */
-  const slow = await take('btcSlow', { diff:M.ENDPOINTS.btcDiff, hash:M.ENDPOINTS.btcHash }, M.TTL.btcSlow,
-    raw => M.readBtcNetwork({ diff:raw.diff, hash:raw.hash }));
-  const fast = await take('btcMin', { fees:M.ENDPOINTS.btcFees, pool:M.ENDPOINTS.btcPool }, M.TTL.btcMin,
-    raw => M.readBtcNetwork({ fees:raw.fees, pool:raw.pool ? { count:raw.pool.count, vsize:raw.pool.vsize, total_fee:raw.pool.total_fee } : null }));
-  const merged = ocMergeNet(slow && slow.d, fast && fast.d);
-  if(merged && (merged.hashNow != null || merged.feeFast != null)){ ocs.net = merged; ocs.netAt = Date.now(); }
-  /* ۲) نقدینگی استیبل‌کوین: عرضه‌ی on-chain تتر/USDC — روزی دو بار کافی است */
-  const stUrls = {}; M.STABLE_SEED.forEach(id => { stUrls[id] = M.ENDPOINTS.stables(id); });
-  const st = await take('stables', stUrls, M.TTL.stables, raw => {
-    const series = M.mergeStableSeries(Object.keys(raw).map(k => M.parseStableSeries(raw[k])));
-    return series.length > 3 ? { series } : null;
-  });
-  if(st && st.d && st.d.series){ ocs.liqSeries = st.d.series; ocs.liqAt = Date.now(); }
-  ocs.liq = M.analyzeLiquidity(ocs.liqSeries, Date.now());
-  if(ocs.liq && ocs.liq.level === 'unknown') ocs.liq = null;
-  /* ۳) TVL زنجیره‌ها: یک فراخوان در ساعت؛ مومنتوم از اسنپ‌شات‌های محلی */
-  const ch = await take('chains', { chains:M.ENDPOINTS.chains }, M.TTL.chains,
-    raw => { const v = M.readChains(raw.chains); return Object.keys(v).length ? { v } : null; });
-  if(ch && ch.d && ch.d.v){
-    ocs.chains = ch.d.v; ocs.chainLook = M.chainLookup(ch.d.v); ocs.chainAt = Date.now();
-    ocs.hist.chains = M.pushChainHistory(ocs.hist.chains, ch.d.v, Date.now());
-  }
-  if(ocs.hist.liq.length > 1) ocs.share = M.shareTrend(ocs.hist.liq, 3, Date.now());
-  if(fresh) ocs.at = Date.now();
-  ocs.lastErr = Object.keys(ocs.errors).length
-    ? 'خطای دسترسی: ' + Object.keys(ocs.errors).map(k => k + ' (' + ocs.errors[k] + ')').join('، ') : null;
-  return fresh;
-}
-
-/* ارزیابی کلانِ لایه — فقط روی «رژیم» و «دروازه» اثر می‌گذارد */
-function ocMarketAssess(){
-  if(!OC_OK()) return null;
-  const M = OnChain;
-  const btc = state.coins.find(c => c.id === 'bitcoin');
-  const btcCh24 = btc && btc.a && Number.isFinite(btc.a.ch24) ? btc.a.ch24 : null;
-  let netA = ocs.net ? M.analyzeBtcNetwork(ocs.net) : null;
-  if(netA && netA.level === 'unknown') netA = null;
-  const div = ocs.net ? M.networkPriceDivergence(ocs.net, btcCh24) : null;
-  const extras = [];
-  if(ocs.share){
-    const pp = ocs.share.pp, days = Math.max(1, Math.round(ocs.share.spanDays));
-    if(pp >= 0.4) extras.push({ k:'سهم دلاری', s:-1, level:'flight',
-      why:['سهم استیبل‌کوین از کل بازار در ' + days + ' روز ' + pp.toFixed(2) + ' واحد بالا رفته — پول از دارایی پرریسک به حالت نقد فرار می‌کند'] });
-    else if(pp <= -0.4) extras.push({ k:'سهم دلاری', s:1, level:'burning',
-      why:['سهم استیبل‌کوین ' + Math.abs(pp).toFixed(2) + ' واحد پایین آمده — دلارِ پارک‌شده دارد صرف خرید می‌شود'] });
-  }
-  const r = M.combineMarket(netA, ocs.liq, div, extras);
-  if(!r.parts.length) return null;
-  r.at = ocs.at; r.netAt = ocs.netAt; r.liqAt = ocs.liqAt; r.share = ocs.share;
-  r.source = M.VERSION;
-  return r;
-}
-
-/* ارزیابی یک ارز: فشار آزادسازی عرضه (رایگان، از همان پاسخ بازار) + TVL زنجیره */
-function coinOnchain(c){
-  const a = c.a;
-  if(!OC_OK() || !a || !a.ok || !tradable(c)) return null;
-  const M = OnChain;
-  const fl = M.analyzeFloat(c);
-  const chain = ocs.chainLook ? ocs.chainLook[c.id] : null;
-  const tv = chain ? M.analyzeChain(chain, ocs.hist.chains, Date.now()) : null;
-  const out = { score:0, ready:false, why:[], flags:{}, chain:chain || null,
-    floatPct: fl.floatPct != null ? +fl.floatPct.toFixed(1) : null,
-    fdvRatio: fl.fdvRatio != null ? +fl.fdvRatio.toFixed(2) : null,
-    tvl1d:null, tvl7d:null, tvl:null, at:ocs.at };
-  if(fl.ready){ out.ready = true; out.score += fl.score; out.why = out.why.concat(fl.why); Object.assign(out.flags, fl.flags); }
-  if(tv && tv.ready){
-    out.ready = true; out.score += tv.score; out.why = out.why.concat(tv.why); Object.assign(out.flags, tv.flags);
-    out.tvl1d = tv.chg1d; out.tvl7d = tv.chg7d; out.tvl = tv.tvl;
-  }
-  /* پاداش حداکثر +۳ (رتبه را بهتر می‌کند، هیچ دری را باز نمی‌کند)؛ جریمه تا
-     سقف ماژول آزاد است: لایه‌ی آنچین فقط حق سخت‌گیریدن دارد. */
-  out.score = Math.round(clamp(out.score, -M.TH.capCoin, 3));
-  return out.ready ? out : null;
-}
-
-function ocStatusText(){
-  if(typeof OnChain === 'undefined') return 'ماژول onchain.js بارگذاری نشده — لایه‌ی On-chain غیرفعال است و بقیه‌ی برنامه بدون تغییر کار می‌کند';
-  if(oc.mode === 'off') return 'لایه‌ی On-chain خاموش است — هیچ فراخوانی به mempool.space یا api.llama.fi زده نمی‌شود';
-  const M = OnChain, b = M.budgetState();
-  const bits = [];
-  bits.push('شبکه BTC: ' + (ocs.net
-    ? (ocs.net.feeFast != null ? ocs.net.feeFast + ' sat/vB' : 'کارمزد —') +
-      (ocs.net.hashNow != null ? ' • ' + (ocs.net.hashNow/1e18).toFixed(0) + ' EH/s' : '')
-    : 'بدون داده'));
-  bits.push('نقدینگی استیبل: ' + (ocs.liq ? M.pctTxt(ocs.liq.chg7d) + ' در ۷ روز (' + ocs.liq.points + ' روز تاریخچه)' : 'در حال جمع‌آوری تاریخچه'));
-  bits.push('TVL: ' + (ocs.chains ? Object.keys(ocs.chains).length + ' زنجیره' : 'بدون داده') +
-    (ocs.hist.chains.length ? ' • ' + ocs.hist.chains.length + ' اسنپ‌شات محلی' : ''));
-  bits.push('فراخوان این ساعت: ' + b.callsThisHour + '/' + b.cap);
-  if(b.blockedForMs > 0) bits.push('⏳ عقب‌نشینی نرخ: ' + Math.ceil(b.blockedForMs/1000) + ' ثانیه');
-  if(ocs.lastErr) bits.push('⚠️ ' + ocs.lastErr);
-  return bits.join(' • ');
-}
-function updateOcStatus(){
-  const el = $('#ocStatus');
-  if(el){ const txt = ocStatusText(); el.textContent = txt; el.title = txt; }
-  const sec = $('#ocSec'); if(sec) sec.dataset.mode = oc.mode;
-}
-function syncOcUI(){ const sel = $('#ocMode'); if(sel) sel.value = oc.mode; }
-
-function renderOnchain(){
-  const grid = $('#ocGrid'); if(!grid) return;
-  if(oc.mode === 'off' || typeof OnChain === 'undefined'){
-    grid.innerHTML = '<div class="oc-empty">لایه‌ی On-chain خاموش است — از «تنظیمات پایش» قابل روشن‌کردن است.</div>';
-    const v0 = $('#ocVerdict'); if(v0) v0.textContent = '—';
-    updateOcStatus(); return;
-  }
-  const M = OnChain, r = (state.oc && state.oc.market) || (state.regime && state.regime.oc);
-  const V = r ? { tailwind:{t:'باد موافق روی زنجیره', c:'var(--up)', i:'🟢'}, headwind:{t:'باد مخالف روی زنجیره', c:'var(--down)', i:'🔴'},
-    mixed:{t:'سیگنال‌های درهم روی زنجیره', c:'var(--pot)', i:'🟡'}, flat:{t:'لایه‌ی آنچین خنثی است', c:'var(--muted)', i:'⚪'} }[r.level] : null;
-  const verdict = $('#ocVerdict');
-  if(verdict) verdict.innerHTML = V
-    ? '<span style="color:' + V.c + '">' + V.i + ' ' + V.t + ' — امتیاز آنچین ' + (r.score > 0 ? '+' : '') + r.score + ' (سقف ' + M.TH.capMarket + ')</span>'
-      + (r.riskOff ? ' <span class="oc-flag">🧊 پرچم خطر مشترک: دروازه یک درجه بسته‌تر شد</span>' : '')
-    : '<span class="muted">هنوز داده‌ی آنچین کافی جمع نشده — لایه بی‌اثر است و بقیه‌ی امتیازها دقیقاً مثل قبل محاسبه می‌شوند</span>';
-  const net = ocs.net, liq = ocs.liq, share = ocs.share, ok = v => Number.isFinite(v);
-  const card = (title, val, sub, tone, tip) => '<div class="oc-card"' + (tone ? ' style="--oc:' + tone + '"' : '') +
-    (tip ? ' title="' + esc(tip) + '"' : '') + '><span>' + title + '</span><b>' + val + '</b><small>' + sub + '</small></div>';
-  const cards = [];
-  cards.push(card('نرخ هش ماینرها', net && ok(net.hashNow) ? (net.hashNow/1e18).toFixed(0) + ' EH/s' : '—',
-    net && ok(net.hashChgPct) ? 'تغییر سه‌روزه ' + M.pctTxt(net.hashChgPct) : 'بدون داده',
-    net && ok(net.hashChgPct) ? (net.hashChgPct >= 0 ? 'var(--up)' : 'var(--down)') : null,
-    'امنیت شبکه و اشتیاق ماینر. ریزش چندهفته‌ای یعنی دستگاه‌ها خاموش شده‌اند — تاریخاً هم‌زمان با کف قیمت‌ها (تسلیم)؛ رشدش یعنی سرمایه‌ی تازه در زیرساخت.'));
-  cards.push(card('تنظیم دشواری', net && ok(net.diffChangePct) ? M.pctTxt(net.diffChangePct) : '—',
-    net && ok(net.diffProgress) ? 'پیشرفت دوره ' + net.diffProgress.toFixed(0) + '٪' : 'بدون داده',
-    net && ok(net.diffChangePct) ? (net.diffChangePct >= 0 ? 'var(--up)' : 'var(--down)') : null,
-    'کاهش دشواری = خروج ماینرهای ضعیف؛ آخرین مرحله‌ی تخلیه‌ی فشار فروش است، نه لزوماً ضعف بازار.'));
-  cards.push(card('کارمزد و صف شبکه', net && ok(net.feeFast) ? net.feeFast + ' sat/vB' : '—',
-    net && ok(net.poolTxs) ? M.fmtInt(net.poolTxs) + ' تراکنش در انتظار' + (ok(net.poolVsizeMb) ? ' (' + net.poolVsizeMb.toFixed(0) + ' MB)' : '') : 'بدون داده',
-    net && ok(net.feeFast) ? (net.feeFast >= M.TH.feeHot ? 'var(--pot)' : null) : null,
-    'تقاضای واقعی برای فضای بلوک. رشد قیمت + کارمزد چسبیده به کف = رالیِ بدون استفاده؛ این واگرایی به‌عنوان هشدار در امتیاز رژیم ثبت می‌شود.'));
-  cards.push(card('نقدینگی استیبل‌کوین', liq && ok(liq.mcap) ? M.fmtUsdBig(liq.mcap) : '—',
-    liq ? 'هفت‌روزه ' + M.pctTxt(liq.chg7d) + ' • سی‌روزه ' + M.pctTxt(liq.chg30d) : 'نیاز به تاریخچه‌ی بیشتر',
-    liq && liq.level === 'expansion' ? 'var(--up)' : liq && liq.level === 'drain' ? 'var(--down)' : null,
-    'ساده‌ترین سنجه‌ی «سوخت بازار»: عرضه‌ی on-chain تتر و USDC. بزرگ‌شدنش یعنی دلار تازه وارد بازی شده؛ کوچک‌شدنش یعنی پول از بازار بیرون رفته — فارغ از جهت قیمت.'));
-  cards.push(card('سهم دلاری از بازار', share && ok(share.share) ? share.share.toFixed(2) + '%' : '—',
-    share ? 'تغییر ' + Math.round(share.spanDays) + ' روزه: ' + (share.pp > 0 ? '+' : '') + share.pp.toFixed(2) + ' واحد' : 'هر چرخه یک اسنپ‌شات محلی ثبت می‌شود',
-    share && ok(share.pp) ? (share.pp > 0 ? 'var(--down)' : 'var(--up)') : null,
-    'سلطه‌ی استیبل‌کوین نسبت به کل ارزش بازار = دماسنج ریسک‌گریزی؛ فقط با تاریخچه‌ی محلی ساخته می‌شود و هیچ فراخوان تازه‌ای نمی‌خواهد.'));
-  const cn = ocs.chains ? Object.keys(ocs.chains).sort((x, y) => ocs.chains[y].tvl - ocs.chains[x].tvl).slice(0, 3) : [];
-  cards.push(card('TVL زنجیره‌های برتر', cn.length ? cn.map(n => M.fmtUsdBig(ocs.chains[n].tvl)).join(' / ') : '—',
-    cn.length ? cn.join(' • ') : 'بدون داده', null,
-    'کل ارزش قفل‌شده‌ی DeFi روی هر زنجیره. سطحِ مطلق چیزی را ثابت نمی‌کند؛ آنچه اهمیت دارد روند آن است و از مقایسه‌ی اسنپ‌شات‌های ساعتی محلی می‌آید.'));
-  grid.innerHTML = cards.join('');
-  const why = $('#ocWhy');
-  if(why) why.innerHTML = (r && r.reasons && r.reasons.length)
-    ? r.reasons.slice(0, 4).map(x => '<span>' + esc(x) + '</span>').join('')
-    : '<span class="muted">هیچ جزء فعالی در لایه وجود ندارد — پس نه امتیازی کم می‌شود و نه دری باز می‌شود</span>';
-  /* جدول آنچینِ ارزها: هر چه در امتیاز خرید اعمال شده، همین‌جا خوانده می‌شود */
-  const tb = $('#ocCoins');
-  if(tb){
-    const rows = state.coins.filter(c => c.a && c.a.ok && c.a.oc).sort((x, y) => x.a.oc.score - y.a.oc.score).slice(0, 8);
-    tb.innerHTML = rows.length ? '<table class="oc-table"><thead><tr><th>ارز</th><th>FDV/MCap</th><th>عرضه در گردش</th><th>TVL ۷ روزه</th><th>امتیاز</th><th>تفسیر</th></tr></thead><tbody>' +
-      rows.map(c => {
-        const o = c.a.oc, tone = o.score > 0 ? 'var(--up)' : o.score < 0 ? 'var(--down)' : 'var(--muted)';
-        return '<tr><td><b>' + esc(c.symbol.toUpperCase()) + '</b></td>'
-          + '<td class="num">' + (o.fdvRatio != null ? o.fdvRatio.toFixed(1) + '×' : '—') + '</td>'
-          + '<td class="num">' + (o.floatPct != null ? o.floatPct.toFixed(0) + '%' : '—') + '</td>'
-          + '<td class="num">' + (o.tvl7d != null ? pct(o.tvl7d, 1) : '—') + '</td>'
-          + '<td class="num" style="color:' + tone + '">' + (o.score > 0 ? '+' : '') + o.score + '</td>'
-          + '<td class="oc-why">' + esc((o.chain ? o.chain + ' — ' : '') + (o.why[0] || '—').slice(0, 120)) + '</td></tr>';
-      }).join('') + '</tbody></table>'
-      : '<div class="oc-empty">برای هیچ ارزی داده‌ی آنچینِ قابل‌داوری نیست (FDV یا تاریخچه‌ی TVL کافی موجود نیست) — پس امتیاز خرید هیچ‌کدام تغییر نمی‌کند.</div>';
-  }
-  updateOcStatus();
-}
-
 function evalMarketGate(R){
   const reasons=[];
   if(!R) return {state:'watch', macro:'watch', reasons:['رژیم بازار هنوز محاسبه نشده است'], stats:null};
@@ -436,12 +154,6 @@ function evalMarketGate(R){
   }
   if(macro==='closed' && R.fng!=null && R.fng<=18){
     macro='watch'; reasons.push(`ترس شدید (${R.fng}) — فقط انباشت پله‌ای روی ارزهای بزرگ با قدرت نسبی مثبت`);
-  }
-  /* 🧊 لایه‌ی On-chain این‌جا فقط حق «سخت‌تر کردن» دارد، هرگز باز کردن دروازه.
-     پرچم خطر مشترک = خروج نقدینگی استیبل هم‌زمان با فشار ماینر. */
-  if(OC_SCORE() && gate.mode!=='off' && R && R.oc && R.oc.riskOff && macro!=='closed'){
-    macro = macro==='open' ? 'watch' : 'closed';
-    reasons.push('🧊 On-chain: خروج نقدینگی استیبل هم‌زمان با افت نرخ هش/دشواری — دروازه یک درجه بسته‌تر شد');
   }
   if(gate.mode==='strict' && macro==='open'){ macro='watch'; reasons.push('حالت سخت‌گیرانه فعال است — آستانه‌های ورود بالاتر رفت'); }
   if(gate.mode==='off') reasons.push('دروازه خاموش است — وضعیت‌ها فقط نمایشی‌اند و هیچ سیگنالی فیلتر نمی‌شود');
@@ -483,16 +195,6 @@ function evalCoinGate(c, mkt){
   if(a.crowd && a.crowd.side==='long' && a.crowd.level==='hot'){
     out.fails.push(`${a.crowd.reason} — ورود تازه در اوج اهرم توصیه نمی‌شود`);
   }
-  /* 🧊 دو مانعی که با کندل دیده نمی‌شوند: کوه عرضه‌ی قفل‌شده و خروج پول از
-     اکوسیستم. هر دو فقط مسدود می‌کنند؛ هیچ‌وقت مجوز تازه نمی‌دهند. */
-  if(OC_SCORE() && a.oc && a.oc.flags){
-    if(a.oc.flags.overhang==='severe')
-      out.fails.push('🧊 فشار آزادسازی عرضه: FDV ' + (a.oc.fdvRatio!=null?a.oc.fdvRatio.toFixed(1)+'×':'—') + ' ارزش بازار' +
-        (a.oc.floatPct!=null ? ' با تنها ' + a.oc.floatPct.toFixed(0) + '٪ عرضه‌ی در گردش' : '') + ' — هر صعود، سهمی از آنلاک‌های پیش‌رو را می‌خورد');
-    if(a.oc.flags.exodus)
-      out.fails.push('🧊 اکوسیستم ' + a.oc.chain + ' کوچک می‌شود (TVL هفت‌روزه ' + pct(a.oc.tvl7d,1) + ') — نقدینگی زیرِ پای این معامله عقب می‌رود');
-  }
-
   /* «چقدر تا مجوز» — فاصله‌ی عددیِ هر شرط (صفر = برقرار). نسخه‌ی متنیِ دلایل
      برای آدم است؛ این آرایه برای میله‌ی پیشرفت در نوار سیگنال‌ها. */
   out.gap={
@@ -501,15 +203,14 @@ function evalCoinGate(c, mkt){
     rs:(!isBtc&&Number.isFinite(a.rs7))?Math.max(0, +(need.rs7-a.rs7).toFixed(2)):0,
     state:need.states.includes(a.buyState)?0:1,
     liq:isFinite(a.volRatio)&&a.volRatio>=0.008?0:1,
-    crowd:(a.crowd&&a.crowd.side==='long'&&a.crowd.level==='hot')?1:0,
-    oc:OC_SCORE()&&a.oc&&a.oc.flags&&(a.oc.flags.overhang==='severe'||a.oc.flags.exodus)?1:0
+    crowd:(a.crowd&&a.crowd.side==='long'&&a.crowd.level==='hot')?1:0
   };
   out.closeness=Math.round(100*[
     clamp(need.score>0?a.buyScore/need.score:1,0,1),
     clamp(need.rrNow>0?a.rrNow/need.rrNow:1,0,1),
     need.rs7<=0?(isBtc||a.rs7>=need.rs7?1:0.5):clamp(1-out.gap.rs/10,0.2,1),
-    out.gap.state?0.4:1, out.gap.liq?0:1, out.gap.crowd?0.3:1, out.gap.oc?0.3:1
-  ].reduce((s2,v)=>s2+v,0)/7);
+    out.gap.state?0.4:1, out.gap.liq?0:1, out.gap.crowd?0.3:1
+  ].reduce((s2,v)=>s2+v,0)/6);
 
   if(!out.fails.length){
     out.state='open';
@@ -1235,21 +936,13 @@ function applyMarketContext(){
       else if(d<=-0.5 && m>=1){ pts+=1; why.push(`سلطه‌ی بیت‌کوین رو به کاهش (${pct(d,2)} واحد) با رشد ارزش کل — چرخش به نفع آلت‌ها`); }
     }
   }
-  /* 🧊 لایه‌ی On-chain روی رژیم: کرانِ ماژول عمداً نامتقارن است (منفی قوی‌تر از
-     مثبت) تا بازار را محافظه‌کارانه کند، نه خوش‌بینانه. */
-  const ocA = ocMarketAssess();
-  const ocM = OC_SCORE() ? ocA : null;      // در «فقط نمایش» رندر می‌شود، اعمال نه
-  state.oc={ market:ocA, net:ocs.net, liq:ocs.liq, share:ocs.share, at:ocs.at, mode:oc.mode,
-    applied:ocM?ocM.score:0, riskOff:!!(ocM&&ocM.riskOff),
-    chains:ocs.chains?Object.keys(ocs.chains).length:0, points:ocs.liqSeries.length };
-  if(ocM){ pts = clamp(pts + ocM.score, -12, 12); if(ocM.score!==0) why = why.concat(ocM.reasons.slice(0,3)); }
   const fng=fngValue();
   /* هیزتریس رژیم: تغییر جهت فقط پس از تأیید در دو چرخه‌ی داده‌ی متوالی.
      روی لبه‌ی آستانه (pts≈±3) یک ارز/یک رویداد خبری نباید دروازه و کارنامه
      را هر ۹۰ ثانیه وارونه کند؛ نمونه‌ی دوم همان جهت، تغییر را قطعی می‌کند. */
   const rawK = pts>=3?'riskon' : pts<=-3?'riskoff' : 'neutral';
   const k = regimeCommit(rawK);
-  state.regime={...REGIMES[k], oc:ocM, btcAvailable:!!btc&&shortCoinFresh(btc), pts, why, breadth, above,
+  state.regime={...REGIMES[k], btcAvailable:!!btc&&shortCoinFresh(btc), pts, why, breadth, above,
     objBreadth, medianCh24, gt, fng, btc7:btc?btc.a.ch7:0, btc24:btc?btc.a.ch24:0,
     rawK, pendingSwitch: rawK!==k ? rawK : null };
 
@@ -1289,11 +982,6 @@ function applyMarketContext(){
       if(a.oiChangePct>=CROWD.oiRisingPct && a.ch24>3) b+=1.5;
       else if(a.oiChangePct<=-CROWD.oiRisingPct && a.ch24>3) b-=1;
     }
-    /* 🧊 آنچینِ ارزی روی «امتیاز خرید» می‌نشیند، نه روی سیگنال تکنیکال: ساختار
-       کندلی دست‌نخورده می‌ماند و فقط اشتها به ورود کم و زیاد می‌شود. بیت‌کوین
-       جریمه نمی‌شود — خودش معیارِ سنجش بقیه است. */
-    a.oc = coinOnchain(c);
-    if(a.oc && OC_SCORE()) b += c.id==='bitcoin' ? Math.max(0, a.oc.score) : a.oc.score;
     a.buyScore=Math.round(clamp(50+b,0,100)); setGrade(a);
     a.gate=evalCoinGate(c, state.gate);
     a.ctx=[];
@@ -1310,7 +998,6 @@ function applyMarketContext(){
         s: a.crowd ? (a.crowd.side==='long'? -4 : 2) : 0});
     }
     if(a.crowd) a.ctx.push({t:a.crowd.reason, s:a.crowd.side==='long'?-4:2});
-    if(a.oc && OC_SCORE() && a.oc.why.length) a.ctx.push({t:'🧊 ' + a.oc.why[0], s:a.oc.score});
     if(a.mdQuality!=='base' && a.atr!=null){
       a.ctx.push({t:`داده‌ی غنی‌شده: ATR(14) چهارساعته ${a.atr.toFixed(2)}٪${a.volZ!=null?` • حجم نسبی ${a.volZ>=0?'+':''}${a.volZ.toFixed(1)}σ`:''}`, s:0});
     }
@@ -1570,11 +1257,7 @@ function longSignal(c){
       thresholds:g.need?{score:g.need.score,rrNow:num(g.need.rrNow,4),rs7:num(g.need.rs7,4)}:null }:null,
     context:{ rs7:num(a.rs7,4), pred7d:num(a.pred,4), rsi:num(a.rsi,2),
       divergence:a.divergType||null, volatilityPct:num(a.dvol,4), marketCap:num(c.market_cap,2),
-      momentumLane: a.momo===true,
-      onchain: a.oc ? { score:a.oc.score, floatPct:num(a.oc.floatPct,2), fdvRatio:num(a.oc.fdvRatio,4),
-        chain:a.oc.chain||null, tvl7dChangePct:num(a.oc.tvl7d,3), tvl1dChangePct:num(a.oc.tvl1d,3),
-        flags:a.oc.flags||{}, why:a.oc.why||[],
-        at:a.oc.at?new Date(a.oc.at).toISOString():null } : null },
+      momentumLane: a.momo===true },
     disclaimer:DISCLAIMER
   };
 }
@@ -1625,22 +1308,7 @@ function buildSignalPayload(opts={}){
     filter:{side,approvedOnly},
     market:{ regime:R?R.k:null, regimeLabel:R?R.label:null, regimeScore:R?R.pts:null,
       gate:state.gate?state.gate.state:null, gateMode:gate.mode,
-      fng:fngValue(), breadth:R?num(R.breadth,4):null, aboveSma20:R?num(R.above,4):null,
-      /* لایه‌ی On-chain در خروجی هم «قابل‌توضیح» می‌ماند: عدد + دلیل + زمان داده */
-      onchain: state.oc && state.oc.market ? {
-        score:state.oc.market.score, level:state.oc.market.level, riskOff:!!state.oc.market.riskOff,
-        reasons:(state.oc.market.reasons||[]).slice(0,4), source:state.oc.market.source,
-        stableMcapUsd:num(state.oc.market.liq&&state.oc.market.liq.mcap,0),
-        stableChg7dPct:num(state.oc.market.liq&&state.oc.market.liq.chg7d,3),
-        stableChg30dPct:num(state.oc.market.liq&&state.oc.market.liq.chg30d,3),
-        stableHistoryDays:num(state.oc.market.liq&&state.oc.market.liq.points,0),
-        hashChgPct:num(state.oc.net&&state.oc.net.hashChgPct,3),
-        difficultyChangePct:num(state.oc.net&&state.oc.net.diffChangePct,3),
-        feeFastSat:num(state.oc.net&&state.oc.net.feeFast,2),
-        mempoolTxCount:num(state.oc.net&&state.oc.net.poolTxs,0),
-        stableSharePp:num(state.oc.share&&state.oc.share.pp,3),
-        at:state.oc.at?new Date(state.oc.at).toISOString():null } : null,
-      onchainMode: oc.mode },
+      fng:fngValue(), breadth:R?num(R.breadth,4):null, aboveSma20:R?num(R.above,4):null },
     count:signals.length,
     signals,
     disclaimer:DISCLAIMER
@@ -1761,17 +1429,6 @@ async function loadAll(manual=false){
     /* داده‌ی غنی‌شده‌ی کش‌شده پیش از تحلیل می‌نشیند تا همین چرخه از ATR و
        تأیید حجم بهره ببرد — با صفر فراخوان تازه. */
     attachCachedMarketData(coins);
-    /* آنچین: داده‌ی کش‌شده بی‌صدا می‌نشیند و یک اسنپ‌شات تازه از همان پاسخ
-       /coins/markets + /global گرفته می‌شود (صفر فراخوان اضافه) — تاریخچه‌ی
-       محلی است که «سهم دلاری» را معنادار می‌کند. */
-    try{
-      if(OC_OK()){
-        ocReadCache();
-        const stUsd=coins.reduce((t2,c)=>t2 + (assetKind(c)==='stable' ? (Number(c.market_cap)||0) : 0), 0);
-        const tot=state.global && state.global.total_market_cap && state.global.total_market_cap.usd;
-        if(stUsd>0 && Number.isFinite(tot)) ocs.hist.liq = OnChain.pushLiqSnap(ocs.hist.liq, {stableUsd:stUsd, mcapUsd:tot}, receivedAt);
-      }
-    }catch(e){ console.warn('onchain snapshot',e); }
     state.coins=coins.map((c,i)=>({...c,a:analyze(c,indicators?.[i])}));
     state.liveData=true; state.dataAt=receivedAt;
     applyMarketContext();
@@ -1822,7 +1479,7 @@ function refreshModal(){
   $('#mshort').innerHTML=shortDetails(current);
   if(mainMeta)drawMain(mainMeta.prices,mainMeta.times);
 }
-function renderAll(){ updateShortPlans(); renderShorts(); renderOverview(); renderPulse(); renderOnchain(); renderFNG(); renderDual(); renderCmp(); renderBest(); renderChips(); renderList(); renderApiPreview(); renderSideTabs(); refreshModal(); }
+function renderAll(){ updateShortPlans(); renderShorts(); renderOverview(); renderHeatmap(); renderPulse(); renderFNG(); renderDual(); renderCmp(); renderBest(); renderChips(); renderList(); renderApiPreview(); renderSideTabs(); refreshModal(); }
 
 function renderOverview(){
   const g=state.global; const cs=state.coins.filter(c=>c.a.ok && tradable(c));
@@ -1844,6 +1501,72 @@ function renderOverview(){
     $('#s-rsitxt').innerHTML=avg>65?'<span class="down">بازار در اشباع خرید</span>':avg<38?'<span class="up">بازار در اشباع فروش — فرصت انباشت</span>':'ناحیه متعادل';
     const above=cs.filter(c=>c.current_price>c.a.sma20).length; $('#s-above').textContent=Math.round(above/cs.length*100)+'%';
   }
+}
+
+/* =====================================================================
+   🗺️ نقشه‌ی حرارتی بازار — یک نگاه، کل بازار.
+   عرض هر کاشی با سهم ارزش بازار و رنگش با تغییر ۲۴ ساعته تعیین می‌شود؛
+   کلیک روی هر کاشی مودال همان ارز را باز می‌کند. بدون هیچ فراخوان تازه —
+   دقیقاً همان داده‌ی /coins/markets که چرخه واکشی کرده است.
+   ===================================================================== */
+function hmColor(ch){
+  if(!Number.isFinite(ch)) return '#334155';
+  const m=Math.min(Math.abs(ch),10)/10;               // شدت: ۱۰٪ و بیشتر = اشباع کامل
+  const hue=ch>=0?150:348;
+  return `hsl(${hue} ${Math.round(30+m*50)}% ${Math.round(26+m*16)}%)`;
+}
+function renderHeatmap(){
+  const el=$('#heatmap'); if(!el) return;
+  const cs=state.coins.filter(c=>c.a&&c.a.ok&&tradable(c))
+    .sort((x,y)=>(y.market_cap||0)-(x.market_cap||0)).slice(0,24);
+  if(!cs.length){ el.innerHTML=''; return; }
+  const tot=cs.reduce((s,c)=>s+(c.market_cap||0),0)||1;
+  el.innerHTML=cs.map(c=>{
+    const a=c.a, ch=Number.isFinite(a.ch24)?a.ch24:null;
+    const w=Math.max(0.7, Math.sqrt((c.market_cap||0)/tot)*7);
+    const tip=`${c.name} — ${fmtP(c.current_price)} | ۲۴ساعته ${pct(ch,2)}${Number.isFinite(a.ch7)?' | ۷روزه '+pct(a.ch7,2):''}`;
+    return `<div class="hm-tile" data-action="open" data-id="${esc(c.id)}" role="button" tabindex="0"`
+      +` style="flex:${w.toFixed(2)} 1 0;background:${hmColor(ch)}" title="${esc(tip)}">`
+      +`<b>${esc(String(c.symbol||'').toUpperCase())}</b><small>${pct(ch,1)}</small></div>`;
+  }).join('');
+}
+
+/* =====================================================================
+   📋 خلاصه‌ی بازار — گزارش متنیِ قابل‌اشتراک از کل داشبورد با یک کلیک.
+   تماماً از داده‌ی تحلیل‌شده‌ی همان چرخه ساخته می‌شود؛ صفر فراخوان شبکه.
+   ===================================================================== */
+function buildSummary(){
+  const R=state.regime, G=state.gate, L=[];
+  L.push('🪙 کریپتوبین — خلاصه‌ی بازار');
+  try{ L.push('🕒 ' + new Date().toLocaleString('fa-IR')); }catch(e){ L.push('🕒 ' + new Date().toISOString()); }
+  if(R) L.push(`🧭 رژیم بازار: ${R.label} (امتیاز ${R.pts>0?'+':''}${R.pts})`);
+  if(G) L.push(`🚦 دروازه‌ی رژیم: ${GATE_STATES[G.state].label}${G.reasons&&G.reasons.length?' — '+G.reasons[0]:''}`);
+  const f=fngValue(); if(f!=null) L.push(`😱 شاخص ترس و طمع: ${f}`);
+  if(R&&Number.isFinite(R.breadth)) L.push(`📊 گستردگی بازار: ${Math.round(R.breadth*100)}٪ ارزها بالای میانگین ۲۰ روزه`);
+  const top=bestList(5).filter(c=>shortCoinFresh(c)).slice(0,3);
+  if(top.length){
+    L.push('🏆 بهترین قیمت‌های خرید:');
+    top.forEach((c,i)=>{ const a=c.a;
+      L.push(`${i+1}. ${c.name} (${String(c.symbol||'').toUpperCase()}) — امتیاز ${a.buyScore} | ورود ${fmtP(a.entry)} | حد ضرر ${fmtP(a.stop)} | اهداف ${fmtP(a.tp1)} / ${fmtP(a.tp2)}`);
+    });
+  } else L.push('🏆 در حال حاضر هیچ ارزی شرایط مجوز ورود را ندارد.');
+  L.push('⚠️ صرفاً آموزشی و تحلیلی — سیگنال قطعی خرید یا فروش نیست.');
+  return L.join('\n');
+}
+async function copySummary(){
+  if(!state.coins.length){ toast('⚠️ هنوز داده‌ای برای خلاصه‌کردن نیست'); return; }
+  const txt=buildSummary();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(txt); }
+    else{
+      const ta=document.createElement('textarea'); ta.value=txt;
+      document.body.appendChild(ta);
+      if(typeof ta.select==='function') ta.select();
+      if(typeof document.execCommand==='function') document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    toast('📋 خلاصه‌ی بازار کپی شد — هرجا خواستید بچسبانید');
+  }catch(e){ toast('⚠️ کپی ناموفق بود — مرورگر دسترسی کلیپ‌بورد نداد'); }
 }
 
 function drawGauge(cv,val,colors){
@@ -1944,10 +1667,7 @@ function gapSectionHtml(cs){
         c.id!=='bitcoin'?chip(`RS ${pct(a.rs7,1)}/${pct(r.need.rs7,1)}`, r.g.rs===0):'',
         chip({now:'در محدوده',below:'زیر محدوده',wait:'کمی صبر',no:'تعقیب قیمت'}[a.buyState]||a.buyState, !r.g.state),
         chip(`حجم ${(a.volRatio*100).toFixed(1)}٪`, !r.g.liq),
-        r.g.crowd?chip('ازدحام لانگ',false):'' +
-        (r.c.a.oc && r.c.a.oc.score<0 ? chip('🧊 فشار آنچین ('+r.c.a.oc.score+')',false)
-         : r.c.a.oc && r.c.a.oc.score>0 ? chip('🧊 باد موافق آنچین +'+r.c.a.oc.score,true)
-         : r.c.a.oc ? chip('🧊 آنچین بی‌اثر',true) : '')
+        r.g.crowd?chip('ازدحام لانگ',false):''
       ].filter(Boolean).join('');
       return `<div class="gap-row" data-action="open" data-id="${esc(c.id)}" role="button" tabindex="0" title="${esc(c.name)}"><img src="${safeImg(c.image)}" alt="" loading="lazy"><span class="sym"><b>${esc(c.symbol.toUpperCase())}</b></span><div class="gap-bar" role="img" aria-label="نسبت آمادگی ${r.close}٪"><span style="width:${r.close}%"></span></div><span class="gap-items">${items}</span></div>`;
     }).join('')}</div>`;
@@ -2123,21 +1843,13 @@ function renderModalInfo(c){
     ['VWAP حجمی', a.vwapVol!=null?fmtP(a.vwapVol):'—'],
     ['شکست ۲۴ ساعته', a.brk24?(a.brk24.state==='up'?'سقف 📈':a.brk24.state==='down'?'کف 📉':'داخل دامنه'):'—'],
   ] : [];
-  /* ردیف‌های آنچین — فقط وقتی لایه برای این ارز داوری کرده است */
-  const ocRows = a.oc ? [
-    ['🧊 امتیاز آنچین', (a.oc.score>0?'+':'')+a.oc.score],
-    ['عرضه‌ی در گردش/کل', a.oc.floatPct!=null?a.oc.floatPct.toFixed(1)+'%':'—'],
-    ['FDV / ارزش بازار', a.oc.fdvRatio!=null?a.oc.fdvRatio.toFixed(2)+'×':'—'],
-    ['زنجیره‌ی میزبان', a.oc.chain?esc(a.oc.chain):'—'],
-    ['TVL هفت‌روزه‌ی زنجیره', a.oc.tvl7d!=null?pct(a.oc.tvl7d,1):'—'],
-  ] : [];
   const dvRows = a.fundingAnnual!=null ? [
     ['فاندینگ سالانه', pct(a.fundingAnnual,1)],
     ['OI تجمیعی فیوچرز', a.oiUsd?fmtBig(a.oiUsd):'—'],
     ['تغییر OI (≥۴۵ دقیقه)', a.oiChangePct!=null?pct(a.oiChangePct,1):'—'],
     ['ازدحام پوزیشن', a.crowd?`${a.crowd.side==='long'?'سمت لانگ':'سمت شورت'} ${a.crowd.level==='hot'?'🔴 داغ':'🟡 گرم'}`:'متعادل'],
   ] : [];
-  $('#mkv').innerHTML=[...mdRows,...dvRows,...ocRows,['RSI (14)',a.rsi?.toFixed(1)??'—'],['MACD',fmtTiny(a.macd)],['Signal',fmtTiny(a.sig)],['Histogram',fmtTiny(a.hist)],['SMA 20',fmtP(a.sma20)],['SMA 50',fmtP(a.sma50)],['EMA 20',fmtP(a.ema20)],['باند بالا',fmtP(a.bbUp)],['باند پایین',fmtP(a.bbLo)],['موقعیت در باند',a.bbPos!=null?(a.bbPos*100).toFixed(0)+'%':'—'],['پهنای باند',Number.isFinite(a.bbWidth)?a.bbWidth.toFixed(1)+'%':'—'],['نوسان روزانه',Number.isFinite(a.dvol)?a.dvol.toFixed(2)+'%':'—'],['شیب ۴۸h',Number.isFinite(a.slopeH)?(a.slopeH*24).toFixed(2)+'%/روز':'—'],['کراس MA',a.cross==='golden'?'طلایی 🌟':a.cross==='death'?'مرگ ☠️':'—'],['کراس MACD',a.macdCross==='bull'?'صعودی':a.macdCross==='bear'?'نزولی':'—'],['قدرت نسبی ۷d',pct(a.rs7,1)],['بتا به BTC',a.beta!=null?a.beta.toFixed(2)+'×':'—']].map(([k,v])=>`<div>${esc(k)}<b>${v??'—'}</b></div>`).join('');
+  $('#mkv').innerHTML=[...mdRows,...dvRows,['RSI (14)',a.rsi?.toFixed(1)??'—'],['MACD',fmtTiny(a.macd)],['Signal',fmtTiny(a.sig)],['Histogram',fmtTiny(a.hist)],['SMA 20',fmtP(a.sma20)],['SMA 50',fmtP(a.sma50)],['EMA 20',fmtP(a.ema20)],['باند بالا',fmtP(a.bbUp)],['باند پایین',fmtP(a.bbLo)],['موقعیت در باند',a.bbPos!=null?(a.bbPos*100).toFixed(0)+'%':'—'],['پهنای باند',Number.isFinite(a.bbWidth)?a.bbWidth.toFixed(1)+'%':'—'],['نوسان روزانه',Number.isFinite(a.dvol)?a.dvol.toFixed(2)+'%':'—'],['شیب ۴۸h',Number.isFinite(a.slopeH)?(a.slopeH*24).toFixed(2)+'%/روز':'—'],['کراس MA',a.cross==='golden'?'طلایی 🌟':a.cross==='death'?'مرگ ☠️':'—'],['کراس MACD',a.macdCross==='bull'?'صعودی':a.macdCross==='bear'?'نزولی':'—'],['قدرت نسبی ۷d',pct(a.rs7,1)],['بتا به BTC',a.beta!=null?a.beta.toFixed(2)+'×':'—']].map(([k,v])=>`<div>${esc(k)}<b>${v??'—'}</b></div>`).join('');
   $('#msig').innerHTML=[...a.signals].sort((x,y)=>Math.abs(y.s)-Math.abs(x.s)).map(s=>`<li style="--sc:${s.s>0?'var(--up)':s.s<0?'var(--down)':'var(--hold)'}"><span>${s.s>0?'✅':s.s<0?'⛔':'ℹ️'}</span><span style="flex:1">${esc(s.t)}</span><b style="color:${s.s>0?'var(--up)':s.s<0?'var(--down)':'var(--muted)'}">${s.s>0?'+':''}${s.s}</b></li>`).join('')
     + ((a.ctx&&a.ctx.length)?`<li style="--sc:var(--accent);flex-direction:column;align-items:stretch"><div class="ctxsig"><b style="font-size:.78rem">🌐 زمینه‌ی بازار (روی امتیاز فرصت خرید اثر دارد)</b>${a.ctx.map(x=>`<div><span>${esc(x.t)}</span><b style="color:${x.s>0?'var(--up)':x.s<0?'var(--down)':'var(--muted)'}">${x.s>0?'+':''}${x.s}</b></div>`).join('')}${a.beta!=null?`<div><span>بتای ۷ روزه نسبت به BTC</span><b>${a.beta.toFixed(2)}×</b></div>`:''}</div></li>`:'');
   const tp=c.current_price*(1+a.pred/100), lo=c.current_price*(1+a.predLo/100), hi=c.current_price*(1+a.predHi/100);
@@ -2513,19 +2225,13 @@ function detectEvents(){
           pushAlert(c,'risk',`فاندینگ سالانه به ${pct(a.fundingAnnual,1)} رسید — ${a.fundingAnnual>0?'ازدحام سمت خرید':'ازدحام سمت فروش (ریسک اسکوییز)'}`, '#fbbf24', watched); fresh++;
         }
       }
-      /* 🧊 عبور از آستانه‌ی آنچین: اولین بار که مانع تازه دیده می‌شود (نه هر چرخه) */
-      const ocKey = a.oc && a.oc.flags ? [(a.oc.flags.overhang||''), a.oc.flags.exodus?'exodus':''].join('|') : null;
-      if(ocKey && ocKey!==pv.ocFlags && a.oc.score<=-4 && pass('sig')){
-        pushAlert(c,'risk',`🧊 On-chain: ${a.oc.why[0]||'مانع آنچینی تازه'} — اثر آن بر امتیاز خرید: ${a.oc.score}`, '#fbbf24', watched); fresh++;
-      }
       if(watched){
         if(pv.price<a.tp1 && c.current_price>=a.tp1){ pushAlert(c,'sig',`به هدف اول رسید (${fmtP(a.tp1)}) 🎯 — ذخیره سود را بررسی کنید`, '#00e676', true); fresh++; }
         if(pv.price>a.stop && c.current_price<=a.stop){ pushAlert(c,'risk',`زیر حد ضرر بسته شد (${fmtP(a.stop)}) ⚠️ — مدیریت ریسک`, '#ef4444', true); fresh++; }
       }
     }
     mon.prev[c.id]={cat:a.cat,score:a.score,buyScore:a.buyScore,buyState:a.buyState,rsi:a.rsi,cross:a.cross,macdCross:a.macdCross,price:c.current_price,tp1:a.tp1,stop:a.stop,
-      volZ:a.volZ??null, brk24:a.brk24?a.brk24.state:null, crowd:a.crowd?a.crowd.side+':'+a.crowd.level:null, fundingAnnual:a.fundingAnnual??null,
-      ocFlags:a.oc&&a.oc.flags?[a.oc.flags.overhang||'',a.oc.flags.exodus?'exodus':''].join('|'):null, ocScore:a.oc?a.oc.score:null};
+      volZ:a.volZ??null, brk24:a.brk24?a.brk24.state:null, crowd:a.crowd?a.crowd.side+':'+a.crowd.level:null, fundingAnnual:a.fundingAnnual??null};
   });
   if(state.regime && mon.prevRegime && mon.prevRegime!==state.regime.k){
     const R=state.regime, btc=state.coins.find(c=>c.id==='bitcoin');
@@ -2541,21 +2247,6 @@ function detectEvents(){
     if(btc){ pushAlert(btc, state.gate.state==='blocked'?'risk':'sig', `🚦 دروازه‌ی رژیم ${verb} ${S.icon} — ${S.label}`, S.c, true); fresh++; }
   }
   if(state.gate) mon.prevGate=state.gate.state;
-  /* 🧊 گذار «باد آنچین» — همان الگوی رژیم/دروازه (فقط تغییر وضعیت، به ارز مرجع
-     چسبیده). بی‌داده هیچ رویدادی ثبت نمی‌شود، نه رویداد «خنثی شد». */
-  const ocLvl = state.oc && state.oc.market ? state.oc.market.level : null;
-  if(ocLvl && mon.prevOc && mon.prevOc!==ocLvl){
-    const btcE=state.coins.find(c=>c.id==='bitcoin');
-    const OCTXT={tailwind:'باد موافق روی زنجیره 🟢', headwind:'باد مخالف روی زنجیره 🔴', mixed:'سیگنال‌های درهم روی زنجیره 🟡', flat:'خنثی شدن لایه‌ی آنچین ⚪'};
-    if(btcE && btcE.a && btcE.a.ok){
-      const worse = ocLvl==='headwind';
-      pushAlert(btcE, worse?'risk':'sig',
-        `🧊 On-chain: ${OCTXT[ocLvl]||ocLvl} (امتیاز ${state.oc.market.score>0?'+':''}${state.oc.market.score}) — ${(state.oc.market.reasons[0]||'').slice(0,140)}`,
-        worse?'#fb7185':'#00e676', worse);
-      fresh++;
-    }
-  }
-  mon.prevOc=ocLvl;
   if(isFirst){
     const top=bestList(25).filter(c=>shortCoinFresh(c)&&gatePermit(c,'open')&&!shorts.records.some(r=>r.id===c.id&&r.status==='active')).slice(0,3);
     top.forEach(c=>pushAlert(c,'buy',`شروع پایش — بهترین قیمت خرید ${fmtP(c.a.entry)} (امتیاز ${c.a.buyScore} • ${c.a.buyStateTxt})`, '#7c5cff', false));
@@ -2607,13 +2298,7 @@ async function enrichCycle(){
     if(derivFresh) applyMarketContext();                    // امتیاز ازدحام تازه شود
     let got=0;
     try{ got=await runEnrichment(); }catch(e){}
-    /* لایه‌ی On-chain با بودجه‌ی مستقل و در همان چرخه: خودش تصمیم می‌گیرد کدام
-       گروه سر رسیده است. خطا هرگز چرخه‌ی اصلی را نمی‌شکند. */
-    let ocFresh=0;
-    try{ ocFresh=await refreshOnChain(); }catch(e){ console.warn('onchain',e); }
-    if(ocFresh) applyMarketContext();
     updateMdStatus();
-    updateOcStatus();
     if(got){ renderAll(); toast(`⚡ داده‌ی غنی‌شده‌ی ${got} ارز بروزرسانی شد (ATR واقعی و تأیید حجم فعال شد)`); }
   }catch(e){ /* لایه‌ی داده هرگز نباید چرخه‌ی اصلی را بشکند */ }
   finally{ mdBusy=false; }
@@ -3038,7 +2723,7 @@ function renderCalc(c){
 function exportCSV(){
   const l=bestList(25);
   if(!l.length){ toast('⚠️ هنوز داده‌ای برای خروجی وجود ندارد'); return; }
-  const head=['رتبه','نام','نماد','رتبه بازار','قیمت فعلی (USD)','بهترین قیمت خرید','کف محدوده','سقف محدوده','فاصله تا ورود %','وضعیت ورود','دروازه‌ی رژیم','دلیل دروازه','پله ۱','پله ۲','پله ۳','میانگین ورود','حد ضرر','هدف ۱','هدف ۲','ریسک/بازده','ریسک/بازده با قیمت فعلی','قدرت نسبی ۷روزه به BTC %','امتیاز خرید','درجه','امتیاز تکنیکال','طبقه','RSI','پیش‌بینی ۷ روزه %','اطمینان %','نوسان روزانه %','ارزش بازار','امتیاز آنچین','عرضه در گردش %','نسبت FDV','TVL زنجیره ۷روزه %','باد آنچین'];
+  const head=['رتبه','نام','نماد','رتبه بازار','قیمت فعلی (USD)','بهترین قیمت خرید','کف محدوده','سقف محدوده','فاصله تا ورود %','وضعیت ورود','دروازه‌ی رژیم','دلیل دروازه','پله ۱','پله ۲','پله ۳','میانگین ورود','حد ضرر','هدف ۱','هدف ۲','ریسک/بازده','ریسک/بازده با قیمت فعلی','قدرت نسبی ۷روزه به BTC %','امتیاز خرید','درجه','امتیاز تکنیکال','طبقه','RSI','پیش‌بینی ۷ روزه %','اطمینان %','نوسان روزانه %','ارزش بازار'];
   /* خنثی‌سازی فرمول: اکسل نام/نماد شروع‌شده با = + @ - را اجرا می‌کند. */
   const cell=v=>{ const t=String(v==null?'':v).replace(/^[=+@\-]/,"'$&"); return /[\",\n;]/.test(t)? '"'+t.replace(/"/g,'""')+'"' : t; };
   const rows=l.map((c,i)=>{ const a=c.a; return [i+1,c.name,c.symbol.toUpperCase(),c.market_cap_rank,
@@ -3046,10 +2731,7 @@ function exportCSV(){
     a.gate&&!a.gate.exempt?GATE_STATES[a.gate.state].short:'مستثنا', a.gate?a.gate.reasons.join(' | '):'',
     a.ladder[0]?.p,a.ladder[1]?.p,a.ladder[2]?.p,a.avgEntry,a.stop,a.tp1,a.tp2,a.rr.toFixed(2),a.rrNow?.toFixed(2),a.rs7?.toFixed(2),
     a.buyScore,a.grade,a.score,CATS[a.cat].label,a.rsi?.toFixed(1),a.pred.toFixed(2),a.conf,
-    a.dvol?.toFixed(2),c.market_cap,
-    a.oc?a.oc.score:'',a.oc&&a.oc.floatPct!=null?a.oc.floatPct.toFixed(1):'',a.oc&&a.oc.fdvRatio!=null?a.oc.fdvRatio.toFixed(2):'',
-    a.oc&&a.oc.tvl7d!=null?a.oc.tvl7d.toFixed(2):'',
-    state.oc&&state.oc.market?state.oc.market.level:''].map(cell).join(','); });
+    a.dvol?.toFixed(2),c.market_cap].map(cell).join(','); });
   const stamp=new Date().toISOString().slice(0,16).replace('T','_').replace(':','-');
   const blob=new Blob(['\uFEFF'+[head.map(cell).join(','),...rows].join('\r\n')],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob), a=document.createElement('a');
@@ -3061,15 +2743,10 @@ function exportCSV(){
 /* ------------------------- Events ------------------------- */
 $('#refreshBtn').onclick=()=>loadAll(true);
 $('#csvBtn').onclick=exportCSV;
+if($('#summaryBtn')) $('#summaryBtn').onclick=copySummary;
 $('#gateOnlyBtn').onclick=()=>{
   gate.onlyApproved=!gate.onlyApproved; gate.save(); syncGateUI(); renderBest();
   toast(gate.onlyApproved?'🚦 فقط ارزهای دارای مجوز دروازه (باز) نمایش داده می‌شوند — مسدودها و انتخابی‌ها حذف شدند':'🚦 فیلتر دروازه خاموش شد — همه‌ی ارزها نمایش داده می‌شوند');
-};
-if($('#ocMode')) $('#ocMode').onchange=e=>{
-  oc.mode = OC_MODES[e.target.value] ? e.target.value : 'auto';
-  oc.save(); syncOcUI();
-  if(state.coins.length){ applyMarketContext(); renderAll(); }
-  toast(`🧊 لایه‌ی On-chain: ${OC_MODES[oc.mode].label} — ${OC_MODES[oc.mode].hint}`);
 };
 $('#gateMode').onchange=e=>{
   gate.mode=e.target.value; gate.save(); syncGateUI();
@@ -3101,6 +2778,18 @@ document.addEventListener('keydown',e=>{
   if((e.key==='Enter'||e.key===' ') && e.target?.dataset?.action && e.target.tagName!=='BUTTON'){
     e.preventDefault(); e.target.click();
   }
+  /* ⌨️ میان‌برها: «/» جستجو، «r» بروزرسانی، «۱/۲/۳» تب‌های جهت، «w» علاقه‌مندی‌ها.
+     داخل فیلدها و مودال غیرفعال‌اند تا تایپ و پیمایش مودال آسیب نبیند. */
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  const t=e.target;
+  if(t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)) return;
+  if($('#modal').classList.contains('open')) return;
+  if(e.key==='/'){ const q=$('#q'); if(q){ e.preventDefault(); q.focus(); } }
+  else if(e.key==='r'||e.key==='R'){ const b=$('#refreshBtn'); if(b) b.click(); }
+  else if(e.key==='1') setSide('long');
+  else if(e.key==='2') setSide('short');
+  else if(e.key==='3') setSide('both');
+  else if(e.key==='w'||e.key==='W'){ const wch=$('#watchChip'); if(wch) wch.click(); }
 });
 document.querySelectorAll('.tf').forEach(b=>b.onclick=()=>{ state.tf=+b.dataset.d; document.querySelectorAll('.tf').forEach(x=>{ const on=x===b; x.classList.toggle('active',on); x.setAttribute('aria-pressed', on?'true':'false'); }); loadAndDrawChart(); });
 ['ovSma20','ovSma50','ovBB','ovPred','ovShort','ovPlan'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>loadAndDrawChart(); });
@@ -3134,10 +2823,17 @@ if(typeof MarketData!=='undefined'){
 /* اگر کاربر اجازه‌ی اعلان را بعد از روشن‌کردن سوییچ پس بگیرد، سوییچ روشن
    می‌ماند و هیچ اعلانی نمی‌آید — در بوت، وضعیت واقعی خوانده می‌شود. */
 try{ if(mon.notif && typeof Notification!=='undefined' && Notification.permission!=='granted'){ mon.notif=false; monSave(); } }catch(e){}
-oc.load();
-ocReadCache();
-syncOcUI();
-updateOcStatus();
+/* 🧹 پاک‌سازی مانده‌ها: لایه‌ی On-chain حذف شده است؛ کلیدهای تنظیمات و کشِ آن
+   (cb_oc_v1 و cbo:*) دیگر مصرف‌کننده‌ای ندارند و فقط سهمیه‌ی حافظه را می‌گیرند. */
+try{
+  localStorage.removeItem('cb_oc_v1');
+  if(typeof localStorage.length==='number' && typeof localStorage.key==='function'){
+    for(let i=localStorage.length-1;i>=0;i--){
+      const k=localStorage.key(i);
+      if(k && k.indexOf('cbo:')===0) localStorage.removeItem(k);
+    }
+  }
+}catch(e){}
 updateMdStatus();
 renderAlerts();
 renderPerf();

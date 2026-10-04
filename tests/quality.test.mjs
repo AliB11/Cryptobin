@@ -30,7 +30,7 @@ assert.ok(readFileSync(new URL('../README.md',import.meta.url),'utf8').includes(
 /* هر اسکریپتی که در HTML هست باید در فهرست پوسته‌ی Service Worker هم باشد —
    وگرنه نسخه‌ی آفلاین با «X is not defined» می‌خوابد. ترتیب بارگذاری هم
   قرارداد است: ماژول‌های خالص پیش از app.js. */
-for(const f of ['analytics.js','market-data.js','short-engine.js','onchain.js']){
+for(const f of ['analytics.js','market-data.js','short-engine.js']){
   assert.match(html,new RegExp(`script src="${f}" defer`),`${f} با defer بارگذاری نمی‌شود`);
   assert.ok(sw.includes(`./${f}`),`${f} در فهرست پوسته‌ی SW نیست`);
   assert.ok(html.indexOf(f)<html.indexOf('app.js'),`${f} باید پیش از app.js بارگذاری شود`);
@@ -38,22 +38,22 @@ for(const f of ['analytics.js','market-data.js','short-engine.js','onchain.js'])
 /* کنترل بودجه‌ی لایه‌ی داده و خط وضعیت آن باید در HTML باشند */
 assert.match(html,/id="mdProfile"/);
 assert.match(html,/id="mdStatus"/);
-/* کنترل و وضعیت لایه‌ی On-chain هم باید در HTML باشد */
-assert.match(html,/id="ocMode"/);
-assert.match(html,/id="ocStatus"/);
-assert.match(html,/id="ocGrid"/);
+/* لایه‌ی On-chain حذف شده است: هیچ اثری از آن نباید در صفحه بماند */
+assert.doesNotMatch(html,/id="oc(Mode|Status|Grid|Sec)"/,'اثری از بخش حذف‌شده‌ی On-chain در HTML مانده است');
+assert.doesNotMatch(html,/onchain\.js/,'اسکریپت حذف‌شده‌ی onchain.js هنوز در HTML است');
+/* قابلیت‌های تازه: نقشه‌ی حرارتی و خلاصه‌ی بازار باید در صفحه حاضر باشند */
+assert.match(html,/id="heatmap"/,'ظرف نقشه‌ی حرارتی در HTML نیست');
+assert.match(html,/id="summaryBtn"/,'دکمه‌ی خلاصه‌ی بازار در HTML نیست');
+assert.match(app,/renderHeatmap\(\)/,'renderHeatmap هرگز صدا زده نمی‌شود');
 /* هر دامنه‌ای که کد واقعاً با آن fetch می‌کند باید در connect-src باشد (وگرنه
    CSP بی‌صدا درخواست را می‌کُشد) و هیچ دامنه‌ی بی‌مصرفی هم نباید در CSP بماند.
    دامنه‌های مصرفی از خودِ منبع استخراج می‌شوند، نه از یک فهرست دستی. */
 {
   const csp=(html.match(/connect-src([^;"]+)/)||[])[1]||'';
   const allowed=[...new Set([...csp.matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(m=>m[1]))].sort();
-  const ocSrc=readFileSync(new URL('../onchain.js',import.meta.url),'utf8');
-  const ep=ocSrc.slice(ocSrc.indexOf('const ENDPOINTS'), ocSrc.indexOf('const STABLE_SEED'));
   const used=new Set();
   const apiHost=app.match(/const API\s*=\s*'https:\/\/([a-z0-9.-]+)/); if(apiHost) used.add(apiHost[1]);
   [...app.matchAll(/getJSON\('https:\/\/([a-z0-9.-]+)/g)].forEach(m=>used.add(m[1]));
-  [...ep.matchAll(/https:\/\/([a-z0-9.-]+)/g)].forEach(m=>used.add(m[1]));
   assert.deepEqual(allowed,[...used].sort(),'connect-src با دامنه‌های واقعیِ فراخوان هم‌خوان نیست');
   assert.ok(!/connect-src[^;"]*\*/.test(html),'wildcard در connect-src مجاز نیست');
 }
@@ -61,10 +61,6 @@ assert.match(html,/id="ocGrid"/);
 {
   const analytics=readFileSync(new URL('../analytics.js',import.meta.url),'utf8');
   const md=readFileSync(new URL('../market-data.js',import.meta.url),'utf8');
-  const oc=readFileSync(new URL('../onchain.js',import.meta.url),'utf8');
-  assert.doesNotMatch(oc,/document\./,'onchain.js نباید به DOM وابسته باشد (آزمون Node)');
-  assert.match(oc,/module\.exports/,'onchain.js باید در Node هم قابل بارگذاری باشد');
-  assert.match(oc,/setEnv/,'onchain.js باید محیط تزریق‌پذیر داشته باشد تا آزمون‌پذیر بماند');
   [analytics,md].forEach((src,name)=>{
     assert.doesNotMatch(src,/document\./,`${name} نباید به DOM وابسته باشد`);
     assert.match(src,/module\.exports/,'ماژول‌ها باید در Node هم قابل بارگذاری باشند');
