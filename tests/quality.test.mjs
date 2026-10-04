@@ -124,6 +124,9 @@ assert.match(app,/\['all','buy','watch','short'\]\.includes\(m\.filter\)/,'فی�
   assert.match(pkg.scripts.test,/quality/,'npm test باید آزمون کیفیت را اجرا کند');
   const ignore=readFileSync(new URL('../.vercelignore',import.meta.url),'utf8');
   assert.match(ignore,/tests\//,'تست‌ها نباید دیپلوی شوند');
+  /* پروانه‌ی اعلام‌شده در package.json باید واقعاً وجود داشته باشد */
+  const lic=readFileSync(new URL('../LICENSE',import.meta.url),'utf8');
+  assert.ok(pkg.license&&lic.includes(pkg.license),'مجوز اعلام‌شده در package.json با فایل LICENSE نمی‌خواند');
 }
 
 const workerCode=readFileSync(new URL('../indicator-worker.js',import.meta.url),'utf8');
