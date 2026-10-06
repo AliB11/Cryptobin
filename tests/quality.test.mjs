@@ -1,4 +1,6 @@
 import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
@@ -124,6 +126,18 @@ assert.match(app,/\['all','buy','watch','short'\]\.includes\(m\.filter\)/,'فی�
   assert.match(pkg.scripts.test,/quality/,'npm test باید آزمون کیفیت را اجرا کند');
   const ignore=readFileSync(new URL('../.vercelignore',import.meta.url),'utf8');
   assert.match(ignore,/tests\//,'تست‌ها نباید دیپلوی شوند');
+  /* پین‌های بیلد: ورسل آن‌ها را بر تنظیمات داشبورد ترجیح می‌دهد، پس حتی اگر
+     Framework Preset اشتباه انتخاب شده باشد (مثلاً Vite که دنبال dist
+     می‌گردد) دیپلوی نمی‌شکند. */
+  assert.equal(vercel.buildCommand,'npm run build','buildCommand باید روی npm run build پین باشد');
+  assert.equal(vercel.outputDirectory,'.','outputDirectory باید روی ریشه (.) پین باشد');
+  assert.equal(vercel.installCommand,'npm install','installCommand باید روی npm install پین باشد');
+  assert.match(pkg.scripts.build,/vercel-build\.mjs/,'اسکریپت build باید دروازه‌ی دیپلوی را اجرا کند');
+  const effectiveIgnore=ignore.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('#'));
+  assert.ok(!effectiveIgnore.some(l=>l.includes('vercel-build')),'vercel-build.mjs باید دیپلوی شود چون Build Command آن را اجرا می‌کند');
+  /* خودِ دروازه‌ی دیپلوی (دقیقاً همان چیزی که ورسل اجرا می‌کند) باید سبز شود. */
+  execFileSync(process.execPath,[fileURLToPath(new URL('../vercel-build.mjs',import.meta.url))],
+    {stdio:'inherit',cwd:fileURLToPath(new URL('..',import.meta.url))});
   /* پروانه‌ی اعلام‌شده در package.json باید واقعاً وجود داشته باشد */
   const lic=readFileSync(new URL('../LICENSE',import.meta.url),'utf8');
   assert.ok(pkg.license&&lic.includes(pkg.license),'مجوز اعلام‌شده در package.json با فایل LICENSE نمی‌خواند');

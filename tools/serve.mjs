@@ -6,6 +6,11 @@
    هدرهای کش با سیاست vercel.json هم‌خوان‌اند تا رفتار دیپلوی روی ورسل
    همین‌جا قابل بررسی باشد: صفحه و sw.js همیشه تازه، بقیه‌ی استاتیک
    با عمر کوتاه. هیچ مسیر بیرونی سرو نمی‌شود و «..» خنثی است.
+
+   پیش‌نمایش زنده (iframe): هدر X-Frame-Options محیط توسعه را از جاسازی
+   در iframe منع می‌کند. برای دیدن پیش‌نمایش داخل iframe، سرور را با
+   `ALLOW_IFRAME=1 node tools/serve.mjs` اجرا کنید. رفتار پیش‌فرض
+   (DENY، هم‌خوان با vercel.json) عوض نمی‌شود.
    ===================================================================== */
 import {createServer} from 'node:http';
 import {readFile, stat} from 'node:fs/promises';
@@ -37,7 +42,8 @@ const cacheFor = p => NO_CACHE.has(p)
 
 const SECURITY = {
   'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
+  /* پیش‌نمایش داخل iframe فقط با opt-in صریح؛ روی ورسل همیشه DENY است. */
+  ...(process.env.ALLOW_IFRAME === '1' ? {} : {'X-Frame-Options': 'DENY'}),
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), geolocation=(), microphone=(), payment=()'
 };
