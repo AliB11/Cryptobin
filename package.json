@@ -6,6 +6,7 @@
   "homepage": "https://github.com/AliB11/Cryptobin#readme",
   "license": "MIT",
   "scripts": {
+    "build": "node vercel-build.mjs",
     "start": "node tools/serve.mjs",
     "test": "node tests/quality.test.mjs && node tests/gate.test.mjs && node tests/hardening.test.mjs && node --test tests/analytics.test.mjs tests/marketdata.test.mjs tests/short.test.mjs && node tests/backtest.mjs",
     "test:quick": "node tests/quality.test.mjs && node tests/gate.test.mjs"
